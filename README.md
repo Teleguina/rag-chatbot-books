@@ -17,14 +17,15 @@
 **-> conda activate chatbotenv**
 5. Now, install the required packages in the above virtual env. <br>
 **-> pip install -r requirements.txt**
-6. Now open a new terminal/cmd in the parent dir of the code and run below command <br>
+**-> pip install --upgrade pip**
+7. Now open a new terminal/cmd in the parent dir of the code and run below command <br>
 **-> cd backend**
-7. Now run the backend application by using below commands. <br>
+8. Now run the backend application by using below commands. <br>
 **-> uvicorn app:app --reload**
-8. Now again open a new terminal/cmd in the parent dir of the code and run below command <br>
+9. Now again open a new terminal/cmd in the parent dir of the code and run below command <br>
 **-> cd frontend**
-9. Now run the backend application by using below commands. <br>
+10. Now run the backend application by using below commands. <br>
 **-> streamlit run main.py**
-10. Now, app should be up and running on local port 8501, to view the app goto your browser and paste the below URL. <br>
+11. Now, app should be up and running on local port 8501, to view the app goto your browser and paste the below URL. <br>
 **-> http://localhost:8501/**
 
