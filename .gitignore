@@ -1,0 +1,32 @@
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Environment files
+*.env
+**/*.env
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Local data files
+backend/books.csv
+
+# Temporary and test output directories
+backend/tempDir/
+test_data/
+
+# Office documents (if you ever add more outside those folders)
+#*.pptx
+#*.pdf
+#*.xlsx
+#*.docx
+#*.txt
+

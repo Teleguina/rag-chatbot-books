@@ -1,147 +1,127 @@
-## Importing Packages ##
+## -------------------- Imports -------------------- ##
 import os
 import re
-from typing import List
 from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+import traceback, logging
+import requests
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, UploadFile
+import pandas as pd
 
-from langchain.document_loaders import TextLoader
-from langchain.document_loaders import PyPDFLoader
-from langchain.document_loaders import Docx2txtLoader
-from langchain.document_loaders import UnstructuredURLLoader
-from langchain.document_loaders import UnstructuredExcelLoader
-from langchain.document_loaders import UnstructuredPowerPointLoader
-
+from langchain.schema import Document
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQAWithSourcesChain
+from langchain.prompts.chat import (
+    ChatPromptTemplate,
+    SystemMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+)
 
 from functions import chunk_data, calculate_embedding_cost, create_embeddings
 
-#--------------------------------------------------------------------------------------------#
 
+## -------------------- Load Env & CSV -------------------- ##
 load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise RuntimeError("Missing OPENAI_API_KEY")
 
-# Getting OpenAI API key from .env file
-openai_api_key = os.getenv("OPENAI_API_KEY")
+csv_path = "/Users/katerinatelegina/Library/Mobile Documents/com~apple~CloudDocs/RAG-bookchat/RAG-Chatbot/backend/books.csv"
+file_name = os.path.basename(csv_path)
+df = pd.read_csv(csv_path)
 
-#--------------------------------------------------------------------------------------------#
+# — Normalize Popularity into booleans, just like in the frontend —
+df["Popularity"] = (
+    df["Popularity"]
+      .astype(str)
+      .str.lower()
+      .map({"checked": True, "true": True})
+      .fillna(False)
+      .astype(bool)
+)
 
+# Turn each row into a LangChain Document
+documents = [
+    Document(
+        page_content=row["Description"],
+        metadata={
+            "source": file_name,
+            "title": row["Title"],
+            "author": row["Author"],
+            "popularity": row["Popularity"],
+            "genre": row["Genre"],
+            "rating": row["Rating"],
+        },
+    )
+    for _, row in df.iterrows()
+]
+
+## -------------------- FastAPI App & Vector Store -------------------- ##
 app = FastAPI()
+vector_store = None  # will be set in startup
 
-#--------------------------------------------------------------------------------------------#
-
-# Initialize global state
-vector_store = None
-
-# Initialize a variable to track the number of chunks
-num_chunks = 0
-
-# Keep the chunks for embedding cost calculation
-processed_chunks = [] 
-
-#--------------------------------------------------------------------------------------------#
-
-# Endpoint to process files, chunk, and calculate embeddings
-@app.post("/upload-files/")
-async def upload_files(files: List[UploadFile]):
-    global vector_store, num_chunks, processed_chunks
-
-    all_documents = []
-    
-    # Save and process files
-    for file in files:
-        file_path = os.path.join("tempDir", file.filename)
-        with open(file_path, "wb") as f:
-            f.write(file.file.read())
-        
-        if file.filename.endswith(".pdf"):
-            loader = PyPDFLoader(file_path)
-        elif file.filename.endswith(".docx"):
-            loader = Docx2txtLoader(file_path)
-        elif file.filename.endswith(".txt"):
-            loader = TextLoader(file_path, encoding='UTF-8')
-        elif file.filename.endswith(".pptx"):
-            loader = UnstructuredPowerPointLoader(file_path)
-        elif file.filename.endswith(".xlsx"):
-            loader = UnstructuredExcelLoader(file_path)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.filename}")
-
-        documents = loader.load()
-        all_documents.extend(documents)
-        
-    # Chunk data
-    chunks = chunk_data(all_documents)
-    num_chunks = len(chunks)
-    processed_chunks = chunks
-    
-    # Calculate embedding cost
-    tokens, embedding_cost = calculate_embedding_cost(chunks)
-    
-    # Create embeddings and save them in FAISS vector store
+@app.on_event("startup")
+async def startup_event():
+    global vector_store
+    chunks = chunk_data(documents)
+    total_tokens, cost = calculate_embedding_cost(chunks)
     vector_store = create_embeddings(chunks)
-    
-    # Return the number of chunks and the embedding cost
-    return {"num_chunks": num_chunks, "embedding_cost": embedding_cost}
+    print(f"✅ Vector store ready: {len(chunks)} chunks ⸺ cost ${cost:.4f}")
 
-#--------------------------------------------------------------------------------------------#
-
-# Endpoint to process URLs, chunk, and calculate embeddings
-class URLInput(BaseModel):
-    urls: List[str]
-
-@app.post("/process-urls/")
-async def process_urls(url_input: URLInput):
-    global vector_store, num_chunks, processed_chunks
-
-    urls = url_input.urls
-    if len(urls) > 5:
-        raise HTTPException(status_code=400, detail="You can only process up to 5 URLs at a time.")
-    
-    loader = UnstructuredURLLoader(urls=urls)
-    data = loader.load()
-
-    # Chunk data
-    chunks = chunk_data(data)
-    num_chunks = len(chunks)
-    processed_chunks = chunks
-    
-    # Calculate embedding cost
-    tokens, embedding_cost = calculate_embedding_cost(chunks)
-    
-    # Create embeddings and save them in FAISS vector store
-    vector_store = create_embeddings(chunks)
-    
-    # Return the number of chunks and the embedding cost
-    return {"num_chunks": num_chunks, "embedding_cost": embedding_cost}
-
-#--------------------------------------------------------------------------------------------#
-
-# Endpoint to generate a response based on the user's query
+## -------------------- Request Schema -------------------- ##
 class QueryRequest(BaseModel):
     query: str
 
+## -------------------- Recommendation Endpoint -------------------- ##
 @app.post("/generate-response/")
-async def generate_response(query_request: QueryRequest):
-    global vector_store, num_chunks, processed_chunks
-
+async def generate_response(req: QueryRequest):
     if vector_store is None:
-        raise HTTPException(status_code=400, detail="Please upload and process your data (vector store is not created)")
+        logging.error("Vector store was None at request time!")
+        raise HTTPException(status_code=500, detail="Vector store not initialized.")
 
-    # generating response with source file reference
-    llm = ChatOpenAI(model='gpt-3.5-turbo', temperature=1)
-    retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': 10})
-    chain = RetrievalQAWithSourcesChain.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
+    # 1) Build your system prompt and retriever
+    system_prompt = (
+        "You are a smart book recommender. "
+        "You are original, so never recommend the same book tweice or the book that you know is popular."
+        "Use the vector store to find relevant descriptions and answer the user’s prompt. "
+        "When asked to recommend a similar book, return 3–6 items in this format:\n"
+        "# Title: ...\n"
+        "# Author: ...\n"
+        "# Genre: ...\n"
+        "# Summary: ...\n"
+        "# Rating: ★★★★☆\n"
+        "Include the star rating based on the metadata."
+    )
+    retriever = vector_store.as_retriever(
+        search_type="similarity",
+        search_kwargs={
+            "k": 10,
+            "filter": {"popularity": False}  # now works!
+        }
+    )
+    chat_prompt = ChatPromptTemplate.from_messages([
+        SystemMessagePromptTemplate.from_template(system_prompt),
+        HumanMessagePromptTemplate.from_template(
+            "Here are the relevant excerpts:\n\n"
+            "{summaries}\n\n"
+            "User asks: {question}"
+        )
+    ])
 
-    ans = chain({"question": query_request.query})
+    try:
+        chain = RetrievalQAWithSourcesChain.from_chain_type(
+            llm=ChatOpenAI(model="gpt-3.5-turbo", temperature=0),
+            retriever=retriever,
+            chain_type="stuff",
+            chain_type_kwargs={"prompt": chat_prompt},
+        )
+        result = chain({"question": req.query})
+    except Exception as e:
+        # Log full stack to your console
+        logging.error("Error in /generate-response:\n" + traceback.format_exc())
+        # Return the exception message in JSON
+        raise HTTPException(status_code=500, detail=str(e))
 
-    # response text cleaning
-    ans['sources'] = ans['sources'].lstrip('./').lstrip('tempDir\\')
-    ans['answer'] = re.sub(r'\s*SOURCES:$','', ans['answer'])
-
-    return {
-            "answer": ans['answer'],
-            "sources": ans['sources'],
-           }
-
+    answer = re.sub(r"\s*SOURCES:$", "", result["answer"].strip())
+    sources = result.get("sources", "")
+    return {"answer": answer, "sources": sources}
