@@ -20,7 +20,7 @@ colorama==0.4.6
 contourpy==1.1.1
 cryptography==43.0.1
 cycler==0.12.1
-dataclasses-json>=0.6.0 
+dataclasses-json==0.5.14
 docx2txt==0.8
 emoji==2.14.0
 et-xmlfile==1.1.0
