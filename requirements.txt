@@ -49,7 +49,7 @@ jsonpath-python==1.0.6
 jsonschema==4.23.0
 jsonschema-specifications==2023.12.1
 kiwisolver==1.4.7
-langchain==0.0.201
+langchain>=0.0.201
 langchainplus-sdk==0.0.20
 langdetect==1.0.9
 lxml==5.3.0
@@ -91,7 +91,6 @@ python-dateutil==2.8.2
 python-dotenv==1.0.0
 python-iso639==2024.4.27
 python-magic==0.4.27
-python-magic-bin==0.4.14
 python-multipart==0.0.12
 python-pptx==1.0.2
 pytz==2024.2
